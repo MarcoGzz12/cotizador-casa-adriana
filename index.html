@@ -377,8 +377,6 @@
             <th>Autorizado</th>
             <th>Surtido</th>
             <th>Entregado</th>
-            <th>Forrado</th>
-            <th>Etiquetas</th>
             <th style="min-width:130px">Notas internas</th>
             <th style="min-width:110px">Fecha</th>
             <th>Acciones</th>
@@ -1655,14 +1653,6 @@ function renderSeguimiento() {
     tr.appendChild(crearCeldaSelect(r.folio, 'entregado', r.entregado ? 'si' : 'no', [
       { v: 'no', t: 'No entregado' }, { v: 'si', t: 'Entregado' }
     ], v => actualizarSeguimiento(r.folio, 'entregado', v === 'si')));
-
-    tr.appendChild(crearCeldaSelect(r.folio, 'forrado', r.forrado || '', [
-      { v: '', t: 'Sin definir' }, { v: 'aplica', t: 'Aplica' }, { v: 'no_aplica', t: 'No aplica' }
-    ], v => actualizarSeguimiento(r.folio, 'forrado', v)));
-
-    tr.appendChild(crearCeldaSelect(r.folio, 'etiquetas', r.etiquetas || 'pendiente', [
-      { v: 'pendiente', t: 'Pendiente' }, { v: 'confirmadas', t: 'Confirmadas' }
-    ], v => actualizarSeguimiento(r.folio, 'etiquetas', v)));
 
     tr.appendChild(crearCeldaTexto(r.folio, 'notas', r.notas || ''));
 

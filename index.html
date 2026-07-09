@@ -165,6 +165,10 @@
   #vistaSeguimiento { display:none; }
   .seg-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
   @media (max-width:560px){ .seg-stats { grid-template-columns:repeat(2,1fr); } }
+  .seg-nube { display:inline-flex; align-items:center; gap:7px; font-size:13px; font-weight:700; padding:6px 13px; border-radius:999px; margin:0 0 14px; line-height:1.2; }
+  .seg-nube.ok { background:#e6f6ec; color:#137a3e; border:1.5px solid #b6e3c6; }
+  .seg-nube.off { background:#fdeaea; color:#b02a2a; border:1.5px solid #f2c4c4; }
+  .seg-nube.wait { background:var(--blue-pale); color:var(--blue-dark); border:1.5px solid #c9e0f2; }
   .seg-stat { background:var(--blue-pale); border-radius:10px; padding:10px 8px; text-align:center; }
   .seg-stat .num { display:block; font-family:'Poppins', sans-serif; font-size:20px; font-weight:800; color:var(--blue-dark); }
   .seg-stat .lbl { display:block; font-size:10.5px; font-weight:800; text-transform:uppercase; letter-spacing:.3px; color:#5a6780; margin-top:2px; }
@@ -339,6 +343,7 @@
 
 <div id="vistaSeguimiento">
   <h1 style="margin-bottom:14px;">Seguimiento de cotizaciones</h1>
+  <p id="segEstadoNube" class="seg-nube wait">☁️ Conectando con la nube…</p>
 
   <div class="card">
     <button type="button" class="btn btn-back" onclick="volverCotizadorDesdeSeguimiento()">&larr; Regresar al cotizador</button>
@@ -1392,6 +1397,59 @@ function guardarSeguimiento() {
   lsSet(LS_KEY_SEGUIMIENTO, JSON.stringify(seguimiento));
 }
 
+// ===== Puente con la base de datos en la nube (Firebase Firestore) =====
+// El módulo de Firebase (al final del archivo) define window.cloudSeg y llama a
+// window.aplicarSeguimientoNube() cada vez que cambian los datos compartidos.
+// Mientras la nube no esté disponible, la app sigue funcionando con datos locales.
+let nubeListo = false;
+let pendienteRenderNube = false;
+
+function setEstadoNube(tipo, texto) {
+  const el = document.getElementById('segEstadoNube');
+  if (!el) return;
+  el.className = 'seg-nube ' + tipo;
+  el.textContent = texto;
+}
+window.setEstadoNube = setEstadoNube;
+
+// Recibe la lista completa de registros desde la nube y la vuelve la fuente de verdad.
+window.aplicarSeguimientoNube = function(records) {
+  records = Array.isArray(records) ? records : [];
+
+  // Migración única: si la nube está vacía pero este equipo ya tenía registros
+  // locales (por haber usado la app antes de conectar), se suben una sola vez.
+  if (!nubeListo && records.length === 0 && seguimiento.length > 0 && window.cloudSeg) {
+    nubeListo = true;
+    seguimiento.forEach(r => { try { window.cloudSeg.set(r); } catch (e) {} });
+    return; // el propio snapshot volverá con los datos ya subidos
+  }
+  nubeListo = true;
+
+  seguimiento = records;
+  guardarSeguimiento(); // caché local para modo sin conexión
+
+  // Si el usuario está escribiendo en una celda, no redibujamos la tabla para no
+  // interrumpirlo; se hará al salir del campo (focusout).
+  const ae = document.activeElement;
+  const editando = ae && ae.closest && ae.closest('#filasSeguimiento');
+  const vista = document.getElementById('vistaSeguimiento');
+  const visible = vista && vista.style.display !== 'none';
+  if (editando) { pendienteRenderNube = true; if (visible) renderSegStats(); return; }
+  if (visible) renderSeguimiento();
+};
+
+document.addEventListener('focusout', function(e) {
+  if (!pendienteRenderNube) return;
+  if (!(e.target && e.target.closest && e.target.closest('#filasSeguimiento'))) return;
+  setTimeout(function() {
+    const ae = document.activeElement;
+    if (ae && ae.closest && ae.closest('#filasSeguimiento')) return; // sigue editando otra celda
+    pendienteRenderNube = false;
+    const vista = document.getElementById('vistaSeguimiento');
+    if (vista && vista.style.display !== 'none') renderSeguimiento();
+  }, 60);
+});
+
 // Se llama automáticamente después de generar/descargar una cotización.
 // Crea el registro de seguimiento si no existe, o actualiza los datos básicos si el
 // mismo folio ya estaba registrado (evita duplicados). Va protegida con try/catch
@@ -1428,6 +1486,8 @@ function registrarSeguimiento(cot) {
     });
   }
   guardarSeguimiento();
+  const registro = seguimiento.find(r => r.folio === folio);
+  if (registro && window.cloudSeg) { try { window.cloudSeg.set(registro); } catch (e) {} }
   const vista = document.getElementById('vistaSeguimiento');
   if (vista && vista.style.display !== 'none') renderSeguimiento();
 }
@@ -1447,6 +1507,7 @@ function actualizarSeguimiento(folio, campo, valor) {
   if (!r) return;
   r[campo] = valor;
   guardarSeguimiento();
+  if (window.cloudSeg) { try { window.cloudSeg.update(folio, campo, valor); } catch (e) {} }
   renderSegStats(); // mantiene los contadores al día sin re-dibujar toda la tabla (evita perder el foco al escribir)
 }
 
@@ -1454,6 +1515,7 @@ function eliminarSeguimiento(folio) {
   if (!confirm('¿Eliminar el registro de seguimiento del folio ' + folio + '?')) return;
   seguimiento = seguimiento.filter(r => r.folio !== folio);
   guardarSeguimiento();
+  if (window.cloudSeg) { try { window.cloudSeg.remove(folio); } catch (e) {} }
   renderSeguimiento();
 }
 
@@ -1704,6 +1766,59 @@ try {
   const btnSafari = document.getElementById('btnAbrirSafari');
   if (btnSafari) btnSafari.href = window.location.href;
 } catch (e) { /* si falla, el botón simplemente queda oculto en desktop y sin acción en móvil */ }
+</script>
+
+<!-- ===== Seguimiento compartido en la nube (Firebase Firestore) ===== -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import {
+    getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot
+  } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBTYrzYzdVgoFmfzQyWMQp-lB2qfRjNISs",
+    authDomain: "casa-adriana-48a04.firebaseapp.com",
+    projectId: "casa-adriana-48a04",
+    storageBucket: "casa-adriana-48a04.firebasestorage.app",
+    messagingSenderId: "288955307879",
+    appId: "1:288955307879:web:cebcb2563ccea8df0a01c2"
+  };
+
+  // Convierte un folio en un ID de documento válido para Firestore.
+  const docId = (folio) => String(folio || '').trim().replace(/[\/\\.#$\[\]]/g, '_') || '_';
+
+  try {
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const col = collection(db, 'cotizaciones');
+
+    // API que usa el resto de la app para escribir en la nube.
+    window.cloudSeg = {
+      set(registro) {
+        return setDoc(doc(col, docId(registro.folio)), registro, { merge: true });
+      },
+      update(folio, campo, valor) {
+        return setDoc(doc(col, docId(folio)), { [campo]: valor }, { merge: true });
+      },
+      remove(folio) {
+        return deleteDoc(doc(col, docId(folio)));
+      }
+    };
+
+    // Escucha en tiempo real: cualquier cambio (de cualquier equipo) refresca la lista.
+    onSnapshot(col, (snap) => {
+      const records = [];
+      snap.forEach((d) => records.push(d.data()));
+      if (window.setEstadoNube) window.setEstadoNube('ok', '☁️ Seguimiento sincronizado · visible en todos los equipos');
+      if (window.aplicarSeguimientoNube) window.aplicarSeguimientoNube(records);
+    }, (err) => {
+      console.error('Firestore:', err);
+      if (window.setEstadoNube) window.setEstadoNube('off', '⚠️ Sin conexión con la nube · usando datos locales');
+    });
+  } catch (e) {
+    console.error('No se pudo iniciar Firebase:', e);
+    if (window.setEstadoNube) window.setEstadoNube('off', '⚠️ Sin conexión con la nube · usando datos locales');
+  }
 </script>
 
 </body>

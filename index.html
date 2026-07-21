@@ -278,7 +278,7 @@
   <a id="btnAbrirSafari" class="btn btn-secondary solo-movil" href="#" target="_blank" rel="noopener" style="margin-bottom:8px;">Abrir en Safari</a>
   <p class="hint solo-movil">Si estás usando WhatsApp en iPhone y el PDF no se descarga, abre esta página en Safari para generar la cotización correctamente.</p>
   <p class="hint" id="estado"></p>
-  <button type="button" id="btnNuevaCotizacion" class="btn btn-add" onclick="nuevaCotizacion()" style="display:none; margin-top:10px;">🧹 Limpiar y empezar una nueva cotización</button>
+  <button type="button" id="btnNuevaCotizacion" class="btn btn-add" onclick="nuevaCotizacion()" style="margin-top:10px;">🧹 Limpiar y empezar una nueva cotización</button>
 </div>
 
 <div class="card">
@@ -1290,10 +1290,6 @@ function generarCotizacion() {
     }
 
     estado.innerHTML = html;
-
-    // Ya se descargó/registró: ofrecer limpiar el cotizador para empezar una nueva.
-    const btnNueva = document.getElementById('btnNuevaCotizacion');
-    if (btnNueva) btnNueva.style.display = 'block';
   } catch (err) {
     estado.innerHTML = `<span style="color:var(--red);">Ocurrió un problema al generar la cotización. Si estás usando WhatsApp en iPhone, abre esta página en Safari e inténtalo de nuevo.</span>`;
     if (ayudaSafari) ayudaSafari.style.display = 'inline-flex';
@@ -1663,9 +1659,8 @@ function editarCotizacion(folio) {
 
 // Limpia el cotizador para empezar una cotización nueva (se ofrece tras descargar).
 function nuevaCotizacion() {
+  if (!confirm('¿Limpiar el cotizador y empezar una nueva cotización?\n\nSe borrarán el cliente y los artículos actuales.')) return;
   cancelarEdicion(); // reutiliza la limpieza: nombre, teléfono, artículos, forrado, descuento y estado
-  const btnNueva = document.getElementById('btnNuevaCotizacion');
-  if (btnNueva) btnNueva.style.display = 'none';
   const ayudaSafari = document.getElementById('btnAbrirSafari');
   if (ayudaSafari) ayudaSafari.style.display = 'none';
   const nombre = document.getElementById('nombre');

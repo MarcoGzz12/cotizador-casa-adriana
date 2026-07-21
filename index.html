@@ -294,9 +294,16 @@
 <div id="vistaAdmin">
   <span class="admin-badge">Modo administrador</span>
   <h1 style="margin-bottom:14px;">Administrar base de datos</h1>
+  <p id="admEstadoNube" class="seg-nube wait">☁️ Conectando con la nube…</p>
 
   <div class="card">
     <button type="button" class="btn btn-back" onclick="volverCotizador()">&larr; Regresar al cotizador</button>
+  </div>
+
+  <div class="card">
+    <p class="card-title"><span class="dot"></span>Respaldo de la base</p>
+    <p class="hint" style="margin:0 0 10px;">Descarga una copia de la lista de artículos y precios de esta computadora (archivo .json).</p>
+    <button type="button" class="btn btn-secondary" onclick="exportarBase()">⬇ Exportar base (respaldo)</button>
   </div>
 
   <div class="card">
@@ -833,7 +840,61 @@ try {
 
 function guardarBase() {
   lsSet(LS_KEY, JSON.stringify(baseArticulos));
+  if (window.cloudBase) { try { window.cloudBase.set(baseArticulos); } catch (e) {} }
 }
+
+// ===== Puente de la BASE DE ARTÍCULOS con la nube (Firebase Firestore) =====
+// El módulo de Firebase (al final del archivo) define window.cloudBase y llama a
+// window.aplicarBaseNube() cuando cambia la base compartida (precios/artículos)
+// desde cualquier equipo. Mientras la nube no esté lista, todo funciona en local.
+let nubeBaseListo = false;
+let pendienteRenderBase = false;
+
+function setEstadoBaseNube(tipo, texto) {
+  const el = document.getElementById('admEstadoNube');
+  if (!el) return;
+  el.className = 'seg-nube ' + tipo;
+  el.textContent = texto;
+}
+window.setEstadoBaseNube = setEstadoBaseNube;
+
+window.aplicarBaseNube = function(items) {
+  if (!Array.isArray(items)) items = [];
+
+  // Migración única: si la nube aún no tiene base pero este equipo sí la tiene
+  // (por haberla usado/editado antes de conectar), se sube una sola vez.
+  if (!nubeBaseListo && items.length === 0 && baseArticulos.length > 0 && window.cloudBase) {
+    nubeBaseListo = true;
+    try { window.cloudBase.set(baseArticulos); } catch (e) {}
+    return; // el propio snapshot volverá con los datos ya subidos
+  }
+  nubeBaseListo = true;
+
+  baseArticulos = items;
+  lsSet(LS_KEY, JSON.stringify(baseArticulos)); // caché local para modo sin conexión
+  actualizarBaseCompleta(); // refresca el buscador/autocompletado del cotizador
+
+  // Si el usuario está editando una celda de la tabla de administración, no la
+  // redibujamos para no interrumpirlo; se hará al salir del campo (focusout).
+  const ae = document.activeElement;
+  const editando = ae && ae.closest && ae.closest('#filasAdmin');
+  const vista = document.getElementById('vistaAdmin');
+  const visible = vista && vista.style.display !== 'none';
+  if (editando) { pendienteRenderBase = true; return; }
+  if (visible) renderTablaAdmin();
+};
+
+document.addEventListener('focusout', function(e) {
+  if (!pendienteRenderBase) return;
+  if (!(e.target && e.target.closest && e.target.closest('#filasAdmin'))) return;
+  setTimeout(function() {
+    const ae = document.activeElement;
+    if (ae && ae.closest && ae.closest('#filasAdmin')) return; // sigue editando otra celda
+    pendienteRenderBase = false;
+    const vista = document.getElementById('vistaAdmin');
+    if (vista && vista.style.display !== 'none') renderTablaAdmin();
+  }, 60);
+});
 
 let TODOS_ARTICULOS = [];
 const MAPA = {};
@@ -1271,6 +1332,26 @@ function mostrarVistaAdmin() {
 function volverCotizador() {
   document.getElementById('vistaAdmin').style.display = 'none';
   document.getElementById('vistaCotizador').style.display = 'block';
+}
+
+function exportarBase() {
+  try {
+    const etiqueta = (prompt('Para identificar este respaldo, escribe un nombre para ESTA computadora (ej. "mostrador", "oficina"):', '') || '')
+      .trim().replace(/[^a-zA-Z0-9_-]/g, '-');
+    const nombre = 'base-articulos' + (etiqueta ? '-' + etiqueta : '') + '-' + new Date().toISOString().slice(0, 10) + '.json';
+    const contenido = JSON.stringify({ etiqueta: etiqueta, fecha: new Date().toISOString(), total: baseArticulos.length, articulos: baseArticulos }, null, 2);
+    const blob = new Blob([contenido], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = nombre;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  } catch (e) {
+    alert('No se pudo exportar la base. Detalle: ' + e.message);
+  }
 }
 
 function agregarArticuloBase() {
@@ -1791,6 +1872,37 @@ try {
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
     const col = collection(db, 'cotizaciones');
+    const docBase = doc(db, 'config', 'articulos'); // base de precios/artículos compartida
+
+    // Bandera de activación de la BASE compartida. Se mantiene en false hasta que
+    // la lista COMBINADA de todas las computadoras esté cargada en la nube; así
+    // ninguna computadora sube ni sobrescribe la base por su cuenta. Cuando esté
+    // lista la base combinada, se cambia a true y se vuelve a publicar.
+    const BASE_SYNC_ACTIVO = false;
+
+    if (BASE_SYNC_ACTIVO) {
+      // API que usa la app para escribir la base de artículos en la nube.
+      window.cloudBase = {
+        set(items) {
+          return setDoc(docBase, { items: items, updatedAt: Date.now() });
+        }
+      };
+
+      // Escucha en tiempo real: si alguien cambia un precio o agrega/elimina un
+      // artículo, se refleja en todos los equipos.
+      onSnapshot(docBase, (snap) => {
+        const data = snap.exists() ? snap.data() : null;
+        const items = data && Array.isArray(data.items) ? data.items : [];
+        if (window.setEstadoBaseNube) window.setEstadoBaseNube('ok', '☁️ Base sincronizada · los cambios se ven en todos los equipos');
+        if (window.aplicarBaseNube) window.aplicarBaseNube(items);
+      }, (err) => {
+        console.error('Firestore (base):', err);
+        if (window.setEstadoBaseNube) window.setEstadoBaseNube('off', '⚠️ Sin conexión con la nube · usando base local');
+      });
+    } else {
+      // Fase 1: base todavía local en cada equipo (compartición en preparación).
+      if (window.setEstadoBaseNube) window.setEstadoBaseNube('wait', 'ℹ️ Base local en esta computadora · compartición en preparación');
+    }
 
     // API que usa el resto de la app para escribir en la nube.
     window.cloudSeg = {
@@ -1818,6 +1930,7 @@ try {
   } catch (e) {
     console.error('No se pudo iniciar Firebase:', e);
     if (window.setEstadoNube) window.setEstadoNube('off', '⚠️ Sin conexión con la nube · usando datos locales');
+    if (window.setEstadoBaseNube) window.setEstadoBaseNube('off', '⚠️ Sin conexión con la nube · usando base local');
   }
 </script>
 

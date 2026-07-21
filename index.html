@@ -133,6 +133,8 @@
   .btn-cancelar-edicion:active { background:#fdeccf; }
   .btn-editar { background:var(--blue-pale); color:var(--blue-dark); border:1.5px solid #c9e0f2; border-radius:7px; padding:6px 10px; font-weight:700; font-family:inherit; font-size:12.5px; cursor:pointer; white-space:nowrap; margin-bottom:6px; }
   .btn-editar:active { background:#d8ebfa; }
+  .btn-duplicar { background:#e9f7ef; color:#137a3e; border:1.5px solid #b6e3c6; border-radius:7px; padding:6px 10px; font-weight:700; font-family:inherit; font-size:12.5px; cursor:pointer; white-space:nowrap; margin-bottom:6px; }
+  .btn-duplicar:active { background:#d6f0e0; }
   .tabla-wrap { overflow-x:auto; border-radius:8px; }
   #sugerencias { position:fixed; z-index:9999; background:#fff; border:1px solid var(--line); border-radius:10px; max-height:240px; overflow-y:auto; box-shadow:0 10px 30px rgba(20,40,70,.22); display:none; }
   #sugerencias .op { padding:11px 13px; border-bottom:1px solid #eef2f7; font-size:14px; line-height:1.35; cursor:pointer; }
@@ -1095,6 +1097,15 @@ function leerCotizacion() {
 
 function generarFolio() {
   let n = parseInt(lsGet('folioConsecutivo') || '0') || 0;
+  // El seguimiento es compartido en la nube, así que el consecutivo debe ser
+  // global: tomamos el folio más alto ya registrado para que ninguna computadora
+  // repita un folio de otra.
+  try {
+    (typeof seguimiento !== 'undefined' ? seguimiento : []).forEach(r => {
+      const m = /^COT-(\d+)$/.exec(String((r && r.folio) || '').trim());
+      if (m) { const k = parseInt(m[1], 10); if (k > n) n = k; }
+    });
+  } catch (e) {}
   n += 1;
   lsSet('folioConsecutivo', String(n));
   return `COT-${String(n).padStart(4,'0')}`;
@@ -1263,8 +1274,10 @@ function generarCotizacion() {
     // No afecta el cálculo ni la descarga: va protegida en su propio try/catch.
     try { registrarSeguimiento(cot); } catch (e) { /* no frena la cotización si falla */ }
 
-    // Si veníamos editando una cotización, ya quedó actualizada: salir del modo edición.
+    // Si veníamos editando o duplicando, ya quedó registrada: salir de ese modo.
     folioEnEdicion = null;
+    modoDuplicado = false;
+    folioDuplicadoOrigen = null;
     actualizarBannerEdicion();
 
     let mensajePDF;
@@ -1603,6 +1616,8 @@ function eliminarSeguimiento(folio) {
 
 // ---- Edición de una cotización ya registrada ----
 let folioEnEdicion = null;
+let modoDuplicado = false;
+let folioDuplicadoOrigen = null;
 
 function actualizarBannerEdicion() {
   const banner = document.getElementById('bannerEdicion');
@@ -1610,6 +1625,9 @@ function actualizarBannerEdicion() {
   if (!banner) return;
   if (folioEnEdicion) {
     if (txt) txt.textContent = 'Estás editando la cotización ' + folioEnEdicion + '. Al descargar se actualizará ese mismo folio.';
+    banner.style.display = 'flex';
+  } else if (modoDuplicado) {
+    if (txt) txt.textContent = 'Estás duplicando ' + (folioDuplicadoOrigen || 'una cotización') + '. Cambia el nombre y el teléfono del cliente y descarga: se generará un folio nuevo automáticamente.';
     banner.style.display = 'flex';
   } else {
     banner.style.display = 'none';
@@ -1657,6 +1675,55 @@ function editarCotizacion(folio) {
   recalcular();
 }
 
+// Duplica una cotización existente: copia sus artículos a una cotización NUEVA
+// (con un folio consecutivo nuevo que se asigna al descargar) y permite cambiar
+// el nombre del cliente. Útil cuando un cliente pide lo mismo que otro.
+function duplicarCotizacion(folio) {
+  const r = seguimiento.find(x => x.folio === folio);
+  if (!r) return;
+
+  const items = Array.isArray(r.items) ? r.items : [];
+  if (items.length === 0) {
+    alert('Esta cotización se registró antes de que se guardara el detalle de artículos, por lo que no se puede duplicar automáticamente. Ábrela con "Editar" o créala de nuevo.');
+    return;
+  }
+
+  // Nombre del nuevo cliente (se propone el mismo; el usuario lo cambia).
+  const nuevoNombre = prompt('Nombre del NUEVO cliente para la cotización duplicada:', r.cliente || '');
+  if (nuevoNombre === null) return; // el usuario canceló
+
+  // Cargar los datos como una cotización NUEVA (no en modo edición).
+  document.getElementById('nombre').value = (nuevoNombre || '').trim();
+  document.getElementById('telefono').value = ''; // el teléfono es de otro cliente: se deja en blanco
+
+  const tb = document.getElementById('filas');
+  tb.innerHTML = '';
+  items.forEach(it => agregarFilaCon(it.art, it.marca, it.precio, it.qty));
+  for (let i = 0; i < 3; i++) agregarFila();
+
+  const fq = document.getElementById('forradoQty');
+  if (fq) fq.value = r.forradoQty || 0;
+  const desc = document.getElementById('descuento');
+  if (desc) desc.checked = r.descuento !== false;
+
+  // Modo NUEVA cotización con aviso de duplicado (al descargar se genera folio nuevo).
+  folioEnEdicion = null;
+  modoDuplicado = true;
+  folioDuplicadoOrigen = folio;
+  actualizarBannerEdicion();
+
+  const estado = document.getElementById('estado');
+  if (estado) estado.innerHTML = '';
+
+  document.getElementById('vistaSeguimiento').style.display = 'none';
+  document.getElementById('vistaAdmin').style.display = 'none';
+  document.getElementById('vistaCotizador').style.display = 'block';
+  window.scrollTo(0, 0);
+  recalcular();
+  const nombreEl = document.getElementById('nombre');
+  if (nombreEl) { nombreEl.focus(); nombreEl.select(); }
+}
+
 // Limpia el cotizador para empezar una cotización nueva (se ofrece tras descargar).
 function nuevaCotizacion() {
   if (!confirm('¿Limpiar el cotizador y empezar una nueva cotización?\n\nSe borrarán el cliente y los artículos actuales.')) return;
@@ -1670,6 +1737,8 @@ function nuevaCotizacion() {
 
 function cancelarEdicion() {
   folioEnEdicion = null;
+  modoDuplicado = false;
+  folioDuplicadoOrigen = null;
   actualizarBannerEdicion();
   // Dejar el formulario listo para una cotización nueva
   document.getElementById('nombre').value = '';
@@ -1824,6 +1893,13 @@ function renderSeguimiento() {
     btnEdit.textContent = 'Editar';
     btnEdit.onclick = () => editarCotizacion(r.folio);
     tdAcc.appendChild(btnEdit);
+    tdAcc.appendChild(document.createElement('br'));
+    const btnDup = document.createElement('button');
+    btnDup.type = 'button';
+    btnDup.className = 'btn-duplicar';
+    btnDup.textContent = 'Duplicar';
+    btnDup.onclick = () => duplicarCotizacion(r.folio);
+    tdAcc.appendChild(btnDup);
     tdAcc.appendChild(document.createElement('br'));
     const btnDel = document.createElement('button');
     btnDel.type = 'button';
